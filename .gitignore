@@ -50,6 +50,11 @@ ehthumbs.db
 Thumbs.db
 
 /data
-/exps
 env/
 outputs/
+VLM2Vec-Qwen2VL-2B/
+VLM2Vec-Qwen2VL-7B/
+*_qry
+*_pred.jsonl
+*_info.jsonl
+*_tgt

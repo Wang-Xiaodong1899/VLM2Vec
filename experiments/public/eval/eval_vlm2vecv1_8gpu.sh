@@ -1,27 +1,26 @@
 #!/usr/bin/env bash
 
-echo "==> Environment"
-echo "conda location: $(which conda)"
-echo "Python location: $(which python)"
-echo "Python version: $(python --version)"
-echo ""
+# echo "==> Environment"
+# echo "conda location: $(which conda)"
+# echo "Python location: $(which python)"
+# echo "Python version: $(python --version)"
+# echo ""
 
-cd projects/VLM2Vec/ || exit
+# cd projects/VLM2Vec/ || exit
 
 # ==============================================================================
 # Configuration
 # ==============================================================================
 CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
 BATCH_SIZE=32
-MODALITIES=("image" "video" "visdoc")
-DATA_BASEDIR=data/vlm2vec_eval
+MODALITIES=("image")
+DATA_BASEDIR=/mnt/bn/wxd-video-understanding/wangxd/data/vlm2vec_eval
 OUTPUT_BASEDIR=exps/vlm2vec
 
 # ==> Define models and their base output paths here
 # Format: "MODEL_NAME;BASE_OUTPUT_PATH"
 declare -a MODEL_SPECS
-MODEL_SPECS+=( "TIGER-Lab/VLM2Vec-Qwen2VL-2B;qwen2_vl;$OUTPUT_BASEDIR/VLM2Vec-V1-Qwen2VL-2B" )
-MODEL_SPECS+=( "TIGER-Lab/VLM2Vec-Qwen2VL-7B;qwen2_vl;$OUTPUT_BASEDIR/VLM2Vec-V1-Qwen2VL-7B" )
+MODEL_SPECS+=( "/mnt/bn/wxd-video-understanding/wangxd/VLM2Vec/VLM2Vec-Qwen2VL-2B;qwen2_vl;$OUTPUT_BASEDIR/VLM2Vec-V1-Qwen2VL-2B" )
 
 
 # ==============================================================================
