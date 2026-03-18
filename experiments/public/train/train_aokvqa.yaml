@@ -1,0 +1,8 @@
+A-OKVQA:
+    dataset_parser: mmeb
+    dataset_name: TIGER-Lab/MMEB-train
+    subset_name: A-OKVQA
+    dataset_split: original
+    image_dir: /mnt/bn/wxd-video-understanding/wangxd/data/vlm2vec_train/MMEB-train
+    num_sample_per_subset: 20000
+    weight: 1
