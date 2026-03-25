@@ -24,7 +24,7 @@ from src.data.collator.eval_collator import MultimodalEvalDataCollator
 from src.data.eval_dataset.base_eval_dataset import AutoEvalPairDataset, generate_cand_dataset
 from src.utils.eval_utils.metrics import RankingMetrics
 from src.model.model import MMEBModel
-from src.model.processor import get_backbone_name, load_processor, COLPALI
+from src.model.processor import get_backbone_name, load_processor, COLPALI, VLM_IMAGE_TOKENS, VLM_VIDEO_TOKENS, process_vlm_inputs_fns
 from src.utils.basic_utils import batch_to_device, print_rank, print_master
 
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s [%(name)s:%(lineno)s] %(message)s')
@@ -49,19 +49,28 @@ def encode_embeddings(
     loader: DataLoader,
     training_args: TrainingArguments,
     model_args: ModelArguments,
+    data_args: DataArguments,
+    processor,
     full_dataset: Dataset,
     encode_side: str,
     description: str = "Encoding"
-) -> tuple[np.ndarray, list]:
-    """
-    Encodes embeddings for a given dataset using the model, handling both standard and
-    late-interaction models in a DDP-safe manner.
-    """
+) -> tuple[object, list]:
     local_rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
 
-    # Check if the model is a late-interaction type
     is_late_interaction = (model_args.model_backbone == COLPALI)
+    framewise = bool(getattr(data_args, "video_framewise_embeddings", False))
+
+    def slice_batch(batch, start: int, end: int):
+        sliced = {}
+        for k, v in batch.items():
+            if isinstance(v, torch.Tensor):
+                sliced[k] = v[start:end]
+            elif isinstance(v, list):
+                sliced[k] = v[start:end]
+            else:
+                sliced[k] = v
+        return sliced
 
     local_embeds = []
     local_gt_infos = []
@@ -70,17 +79,73 @@ def encode_embeddings(
     model.eval()
     with torch.no_grad():
         for inputs, dataset_info in tqdm(loader, desc=f"{description} (rank {local_rank})", disable=local_rank > 0):
+            if encode_side == "qry":
+                local_gt_infos.extend(dataset_info)
+            else:
+                local_gt_infos.extend([info["cand_name"] for info in dataset_info])
+
+            if framewise and (not is_late_interaction) and ("texts" in inputs) and ("images" in inputs):
+                video_token = VLM_VIDEO_TOKENS.get(model_args.model_backbone)
+                image_token = VLM_IMAGE_TOKENS.get(model_args.model_backbone)
+                process_fn = process_vlm_inputs_fns.get(model_args.model_backbone)
+
+                if video_token and image_token and process_fn:
+                    texts = inputs["texts"]
+                    visuals = inputs["images"]
+
+                    flat_texts = []
+                    flat_visuals = []
+                    lengths = []
+
+                    for text, visual_input in zip(texts, visuals):
+                        is_video = isinstance(visual_input, list) and len(visual_input) > 1 and (video_token in text)
+                        if is_video:
+                            lengths.append(len(visual_input))
+                            frame_text = text.replace(video_token, image_token)
+                            for frame in visual_input:
+                                flat_texts.append(frame_text)
+                                flat_visuals.append(frame)
+                        else:
+                            lengths.append(1)
+                            flat_texts.append(text)
+                            flat_visuals.append(visual_input)
+
+                    processed_inputs = process_fn(
+                        {"text": flat_texts, "images": flat_visuals},
+                        processor=processor,
+                        max_length=data_args.max_len,
+                    )
+
+                    flat_reps_batches = []
+                    for start in range(0, len(flat_texts), training_args.per_device_eval_batch_size):
+                        end = min(start + training_args.per_device_eval_batch_size, len(flat_texts))
+                        chunk_inputs = slice_batch(processed_inputs, start, end)
+                        chunk_inputs = batch_to_device(chunk_inputs, training_args.device)
+                        with torch.autocast(enabled=True, dtype=torch.bfloat16, device_type="cuda"):
+                            if encode_side == "qry":
+                                output = model(qry=chunk_inputs)
+                                reps = output["qry_reps"].detach()
+                            else:
+                                output = model(tgt=chunk_inputs)
+                                reps = output["tgt_reps"].detach()
+                        flat_reps_batches.append(reps)
+
+                    flat_reps = torch.cat(flat_reps_batches, dim=0).cpu().float()
+
+                    offset = 0
+                    for n in lengths:
+                        local_embeds.append(flat_reps[offset: offset + n].numpy())
+                        offset += n
+                    continue
+
             inputs = batch_to_device(inputs, training_args.device)
             with torch.autocast(enabled=True, dtype=torch.bfloat16, device_type="cuda"):
-                # Determine if encoding query or target based on available keys
                 if encode_side == "qry":
                     output = model(qry=inputs)
                     reps = output["qry_reps"].detach()
-                    local_gt_infos.extend(dataset_info)  # to retain all information per query
                 else:
                     output = model(tgt=inputs)
                     reps = output["tgt_reps"].detach()
-                    local_gt_infos.extend([info["cand_name"] for info in dataset_info])  # to retain ground-truth labels
 
             if is_late_interaction and reps.dim() == 3:
                 local_max_len = max(local_max_len, reps.shape[1])
@@ -88,20 +153,33 @@ def encode_embeddings(
             local_embeds.append(reps)
 
     if not local_embeds:
-        # Handle cases where a rank gets no data
-        return np.array([]), []
+        return [], []
 
-    # === DDP Synchronization and Padding for Late-Interaction Models ===
+    if framewise and (not is_late_interaction) and isinstance(local_embeds[0], np.ndarray):
+        if dist.is_initialized() and full_dataset.num_rows >= world_size:
+            print_master(f"Gathering {encode_side} embeddings across all ranks...")
+
+            gathered_embeds = [None for _ in range(world_size)]
+            dist.all_gather_object(gathered_embeds, local_embeds)
+            final_embeddings = [e for rank_embeds in gathered_embeds for e in rank_embeds]
+
+            gathered_gt_infos = [None for _ in range(world_size)]
+            dist.all_gather_object(gathered_gt_infos, local_gt_infos)
+            all_gt_infos = [key for rank_keys in gathered_gt_infos for key in rank_keys]
+        else:
+            all_gt_infos = local_gt_infos
+            final_embeddings = local_embeds
+
+        return final_embeddings, all_gt_infos
+
     if is_late_interaction:
         if dist.is_initialized():
-            # 1. Find the global maximum sequence length across all ranks
             local_max_len_tensor = torch.tensor(local_max_len, device=training_args.device)
             dist.all_reduce(local_max_len_tensor, op=dist.ReduceOp.MAX)
             global_max_len = local_max_len_tensor.item()
         else:
             global_max_len = local_max_len
 
-        # 2. Pad all local embeddings to the global max length
         padded_embeds = []
         for reps_batch in local_embeds:
             if reps_batch.dim() == 3:
@@ -109,26 +187,23 @@ def encode_embeddings(
                 padding_size = global_max_len - L
                 padded_batch = F.pad(reps_batch, (0, 0, 0, padding_size), "constant", 0)
                 padded_embeds.append(padded_batch)
-            else: # Should not happen if model is consistently late-interaction
+            else:
                 padded_embeds.append(reps_batch)
 
         embeds_tensor = torch.cat(padded_embeds, dim=0).contiguous()
-    else: # Standard dense models
+    else:
         embeds_tensor = torch.cat(local_embeds, dim=0).contiguous()
 
-
-    # === Gather embeddings and keys from all ranks ===
     if dist.is_initialized() and full_dataset.num_rows >= world_size:
         print_master(f"Gathering {encode_side} embeddings across all ranks...")
 
-        # Use the more efficient all_gather_into_tensor for tensors
         output_shape = list(embeds_tensor.shape)
         output_shape[0] = full_dataset.num_rows
         embeds_tensor = embeds_tensor.to(training_args.device)
         gathered_embeds_tensor = torch.empty(output_shape, dtype=embeds_tensor.dtype, device=training_args.device)
         dist.all_gather_into_tensor(gathered_embeds_tensor, embeds_tensor)
         final_embeddings = gathered_embeds_tensor.cpu().float().numpy()
-        # Gather metadata, for which all_gather_object is appropriate
+
         gathered_gt_infos = [None for _ in range(world_size)]
         dist.all_gather_object(gathered_gt_infos, local_gt_infos)
         all_gt_infos = [key for rank_keys in gathered_gt_infos for key in rank_keys]
@@ -249,7 +324,7 @@ def main():
             print_master("Encoding queries...")
             eval_qry_collator = MultimodalEvalDataCollator(processor, model_args, data_args, "qry")
             eval_qry_loader = DataLoader(eval_qry_dataset, batch_size=current_batch_size, collate_fn=eval_qry_collator, num_workers=training_args.dataloader_num_workers)
-            query_embeds, gt_infos = encode_embeddings(model, eval_qry_loader, training_args, model_args, padded_qry_dataset, encode_side="qry", description=f"Queries for {dataset_name}")
+            query_embeds, gt_infos = encode_embeddings(model, eval_qry_loader, training_args, model_args, data_args, processor, padded_qry_dataset, encode_side="qry", description=f"Queries for {dataset_name}")
             query_embeds = query_embeds[:len(full_eval_qry_dataset)]  # world_size>1, trim the padded data points
             gt_infos = gt_infos[:len(full_eval_qry_dataset)]
             if local_rank == 0:
@@ -269,7 +344,7 @@ def main():
             eval_cand_collator = MultimodalEvalDataCollator(processor, model_args, data_args, "cand")
             eval_cand_loader = DataLoader(eval_cand_dataset, batch_size=current_batch_size, collate_fn=eval_cand_collator, num_workers=training_args.dataloader_num_workers)
 
-            cand_embeds, all_cand_ids = encode_embeddings(model, eval_cand_loader, training_args, model_args, padded_cand_dataset, encode_side="cand", description=f"Candidates for {dataset_name}")
+            cand_embeds, all_cand_ids = encode_embeddings(model, eval_cand_loader, training_args, model_args, data_args, processor, padded_cand_dataset, encode_side="cand", description=f"Candidates for {dataset_name}")
             cand_embeds = cand_embeds[:len(full_eval_cand_dataset)]  # world_size>1, trim the padded data points
             all_cand_ids = all_cand_ids[:len(full_eval_cand_dataset)]
 
@@ -299,19 +374,78 @@ def main():
             gt_infos = [json.loads(l) for l in open(dataset_info_path)]
             pred_dicts = []
 
+            def as_frames(x: object) -> np.ndarray:
+                arr = np.asarray(x)
+                if arr.ndim == 1:
+                    return arr[None, :]
+                return arr
+
+            def pool_framewise_mean(x: object) -> np.ndarray:
+                arr = as_frames(x)
+                return arr.mean(axis=0)
+
+            def compute_maxsim_scores(qry_vecs: np.ndarray, cand_frames_list: list[np.ndarray]) -> np.ndarray:
+                device = training_args.device
+                qry_bs = int(getattr(data_args, "framewise_maxsim_qry_batch_size", 64))
+                cand_bs = int(getattr(data_args, "framewise_maxsim_cand_batch_size", 256))
+
+                qry_tensor_all = torch.from_numpy(qry_vecs).to(device)
+                num_q = qry_tensor_all.shape[0]
+                num_c = len(cand_frames_list)
+                out = np.empty((num_q, num_c), dtype=np.float32)
+
+                for c0 in range(0, num_c, cand_bs):
+                    c1 = min(c0 + cand_bs, num_c)
+                    batch_frames = [cand_frames_list[i] for i in range(c0, c1)]
+                    max_f = max(f.shape[0] for f in batch_frames)
+                    d = batch_frames[0].shape[1]
+
+                    frames = torch.zeros((c1 - c0, max_f, d), device=device, dtype=torch.float16)
+                    mask = torch.zeros((c1 - c0, max_f), device=device, dtype=torch.bool)
+                    for i, f in enumerate(batch_frames):
+                        fi = f.shape[0]
+                        frames[i, :fi] = torch.from_numpy(f).to(device, dtype=torch.float16)
+                        mask[i, :fi] = True
+
+                    for q0 in range(0, num_q, qry_bs):
+                        q1 = min(q0 + qry_bs, num_q)
+                        q = qry_tensor_all[q0:q1].to(dtype=torch.float16)
+                        s = torch.einsum("qd,bfd->qbf", q, frames)
+                        fill_value = torch.finfo(s.dtype).min
+                        s = s.masked_fill(~mask.unsqueeze(0), fill_value)
+                        max_s = s.max(dim=2).values
+                        out[q0:q1, c0:c1] = max_s.cpu().float().numpy()
+
+                return out
+
             rank_against_all_candidates = task_config.get("eval_type", "global") == "global"
+            use_framewise = isinstance(qry_embeds, list) and getattr(data_args, "video_framewise_embeddings", False)
+            framewise_scoring = getattr(data_args, "framewise_scoring", "mean")
+
             if rank_against_all_candidates:
                 cand_keys = list(cand_embed_dict.keys())
-                cand_embeds = np.stack([cand_embed_dict[key] for key in cand_keys])
-                # Handle late-interaction scoring
-                if qry_embeds.ndim == 3: # Query: [N_q, L_q, H] | Candidate: [N_c, L_c, H]
-                    qry_embed = torch.from_numpy(qry_embeds)
-                    cand_embeds = [torch.from_numpy(np.array(t)) for t in cand_embeds]
-                    scores = processor.score(qry_embed, cand_embeds, batch_size=64)  # use ColPali score function
-                    ranked_candids = torch.argsort(-scores, dim=1).cpu().numpy().tolist()
-                else: # Dense
-                    cosine_scores = np.dot(qry_embeds, cand_embeds.T)
-                    ranked_candids = np.argsort(-cosine_scores, axis=1)
+
+                if use_framewise and framewise_scoring == "maxsim":
+                    qry_vecs = np.stack([pool_framewise_mean(e) for e in qry_embeds])
+                    cand_frames_list = [as_frames(cand_embed_dict[key]).astype(np.float32) for key in cand_keys]
+                    scores = compute_maxsim_scores(qry_vecs.astype(np.float32), cand_frames_list)
+                    ranked_candids = np.argsort(-scores, axis=1)
+                else:
+                    if use_framewise:
+                        qry_embeds = np.stack([pool_framewise_mean(e) for e in qry_embeds])
+                        cand_embeds = np.stack([pool_framewise_mean(cand_embed_dict[key]) for key in cand_keys])
+                    else:
+                        cand_embeds = np.stack([cand_embed_dict[key] for key in cand_keys])
+
+                    if isinstance(qry_embeds, np.ndarray) and qry_embeds.ndim == 3:
+                        qry_embed = torch.from_numpy(qry_embeds)
+                        cand_embeds = [torch.from_numpy(np.array(t)) for t in cand_embeds]
+                        scores = processor.score(qry_embed, cand_embeds, batch_size=64)
+                        ranked_candids = torch.argsort(-scores, dim=1).cpu().numpy().tolist()
+                    else:
+                        cosine_scores = np.dot(qry_embeds, cand_embeds.T)
+                        ranked_candids = np.argsort(-cosine_scores, axis=1)
+
                 for qid, (ranked_candid, gt_info) in tqdm(enumerate(zip(ranked_candids, gt_infos)), desc=f"Calculating scores for {dataset_name}"):
                     rel_docids = gt_info["label_name"] if isinstance(gt_info["label_name"], list) else [gt_info["label_name"]]
                     rel_scores = gt_info["rel_scores"] if "rel_scores" in gt_info else None
@@ -323,15 +457,27 @@ def main():
                     })
             else:
                 for qid, (qry_embed, gt_info) in tqdm(enumerate(zip(qry_embeds, gt_infos)), desc=f"Calculating scores for {dataset_name}"):
-                    cand_embeds = np.stack([cand_embed_dict[key] for key in gt_info["cand_names"]])
-                    if qry_embeds.ndim == 3: # Query: [N_q, L_q, H] | Candidate: [N_c, L_c, H]
-                        qry_embed = torch.from_numpy(np.array(qry_embed)).unsqueeze(0)
-                        cand_embeds = [torch.from_numpy(np.array(t)) for t in cand_embeds]
-                        scores = processor.score(qry_embed, cand_embeds, batch_size=1024)  # use ColPali score function
-                        ranked_candids = torch.argsort(-scores, dim=1).cpu().numpy().tolist()[0]
+                    if use_framewise and framewise_scoring == "maxsim":
+                        qry_vec = pool_framewise_mean(qry_embed).astype(np.float32)
+                        cand_frames = [as_frames(cand_embed_dict[key]).astype(np.float32) for key in gt_info["cand_names"]]
+                        scores = compute_maxsim_scores(qry_vec[None, :], cand_frames)[0]
+                        ranked_candids = np.argsort(-scores)
                     else:
-                        cosine_score = np.dot(qry_embed, cand_embeds.T)
-                        ranked_candids = np.argsort(-cosine_score)
+                        if use_framewise:
+                            qry_embed = pool_framewise_mean(qry_embed)
+                            cand_embeds = np.stack([pool_framewise_mean(cand_embed_dict[key]) for key in gt_info["cand_names"]])
+                        else:
+                            cand_embeds = np.stack([cand_embed_dict[key] for key in gt_info["cand_names"]])
+
+                        if isinstance(qry_embeds, np.ndarray) and qry_embeds.ndim == 3:
+                            qry_embed = torch.from_numpy(np.array(qry_embed)).unsqueeze(0)
+                            cand_embeds = [torch.from_numpy(np.array(t)) for t in cand_embeds]
+                            scores = processor.score(qry_embed, cand_embeds, batch_size=1024)
+                            ranked_candids = torch.argsort(-scores, dim=1).cpu().numpy().tolist()[0]
+                        else:
+                            cosine_score = np.dot(qry_embed, cand_embeds.T)
+                            ranked_candids = np.argsort(-cosine_score)
+
                     rel_docids = gt_info["label_name"] if isinstance(gt_info["label_name"], list) else [gt_info["label_name"]]
                     rel_scores = gt_info["rel_scores"] if "rel_scores" in gt_info else None
 

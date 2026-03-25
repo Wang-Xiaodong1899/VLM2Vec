@@ -43,8 +43,12 @@ class DataArguments:
     image_resolution: str = field(default=None, metadata={"help": "for models i.e. LLaVA-next and Qwen, resize images first, none means using original image resolution. This is only works when `--resize_use_processor false`."})
     resize_use_processor: bool = field(default=True, metadata={"help": "Resize visual inputs insides processor, e.g. Qwen2VLImageProcessor, instead of by our code."})
     resize_min_pixels: int = field(default=28*28*4, metadata={"help": "The min pixels of the image to resize the image. This is only works when `--resize_use_processor true`."})
-    resize_max_pixels: int = field(default=28*28*1280, metadata={"help": "The max pixels of the image to resize the image. This is only works when `--resize_use_processor true`."})
+    resize_max_pixels: int = field(default=28*28*384, metadata={"help": "The max pixels of the image to resize the image. This is only works when `--resize_use_processor true`."})
     image_decay_factor: float = field(default=None, metadata={"help": "The image decay factor for resizing temporal images"})
+    video_framewise_embeddings: bool = field(default=False, metadata={"help": "If true, encode videos frame-by-frame and return per-sample embeddings with shape (N_frames, D) (saved as a Python list)."})
+    framewise_scoring: str = field(default="mean", metadata={"help": "Scoring for framewise video embeddings: mean | maxsim. Only used when video_framewise_embeddings is true."})
+    framewise_maxsim_qry_batch_size: int = field(default=64, metadata={"help": "Query batch size for maxsim scoring."})
+    framewise_maxsim_cand_batch_size: int = field(default=256, metadata={"help": "Candidate batch size for maxsim scoring."})
     num_hardneg: int = field(default=0, metadata={"help": "hard negative number"})
 
 
