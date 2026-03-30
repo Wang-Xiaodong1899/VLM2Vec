@@ -233,14 +233,33 @@ class GradCache:
         else:
             sync_contexts = [nullcontext for _ in range(len(model_inputs))]
 
-        for x, state, gradient, sync_context in zip(model_inputs, random_states, cached_gradients, sync_contexts):
-            with sync_context():
-                with state:
-                    y = self.model_call(model, x)
-                reps = self.get_reps(y)
+        with torch.enable_grad():
+            for x, state, gradient, sync_context in zip(model_inputs, random_states, cached_gradients, sync_contexts):
+                with sync_context():
+                    base_model = model.module if hasattr(model, "module") else model
+                    post_decoder = getattr(base_model, "post_decoder", None)
+                    if post_decoder is not None:
+                        for p in post_decoder.parameters():
+                            p.requires_grad = True
 
-                surrogate = torch.dot(reps.flatten(), gradient.flatten())
-                surrogate.backward()
+                    with state:
+                        y = self.model_call(model, x)
+                    reps = self.get_reps(y)
+
+                    if not reps.requires_grad:
+                        trainable_names = [n for n, p in base_model.named_parameters() if p.requires_grad]
+                        backbone = getattr(base_model, "model_backbone", None)
+                        post_trainable = False
+                        if post_decoder is not None:
+                            post_trainable = any(p.requires_grad for p in post_decoder.parameters())
+                        raise RuntimeError(
+                            "GradCache second forward produced reps with requires_grad=False. "
+                            f"model_backbone={backbone}, post_decoder_present={post_decoder is not None}, post_decoder_trainable={post_trainable}, "
+                            f"trainable_param_count={len(trainable_names)}, sample_trainables={trainable_names[:10]}"
+                        )
+
+                    surrogate = torch.dot(reps.flatten(), gradient.flatten())
+                    surrogate.backward()
 
     def cache_step(
         self,

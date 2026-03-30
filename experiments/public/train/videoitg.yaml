@@ -1,0 +1,13 @@
+VideoITG-40K-clip-keyframe:
+    dataset_parser: videoitg_clip_keyframe
+    dataset_name: VideoITG-40K
+    dataset_path: /mnt/bn/wxd-video-understanding/wangxd/VLM2Vec/video_itg_data_single_clip_55884_processed_11k.json
+    video_frame_basedir: /mnt/bn/wxd-video-understanding/wangxd/VLM2Vec/Video_Frames_single_clip
+    weight: 1
+    num_rows: 11000
+
+    interval_s: 5
+    query_num_frames: 32
+    pos_num_frames: 8
+    pos_with_question: false
+    max_context_clip: 5

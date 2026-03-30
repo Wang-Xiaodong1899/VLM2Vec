@@ -1,7 +1,10 @@
 import logging
+import os
 
 import PIL
 from transformers.image_utils import ChannelDimension
+
+from peft import PeftConfig
 
 from src.model.baseline_backbone.colpali import ColPaliProcessor
 
@@ -103,6 +106,10 @@ def load_processor(model_args, data_args=None):
     Note: due to this change, https://github.com/huggingface/transformers/commit/9215cc62d4366072aacafa4e44028c1ca187167b#diff-6505546ec5a9ab74b2ce6511681dd31194eb91e9fa3ce26282e487a5e61f9356L1102
     """
     model_name_or_path = model_args.checkpoint_path if model_args.checkpoint_path else model_args.model_name
+    if isinstance(model_name_or_path, str) and os.path.isdir(model_name_or_path) and os.path.exists(
+        os.path.join(model_name_or_path, "adapter_config.json")
+    ):
+        model_name_or_path = PeftConfig.from_pretrained(model_name_or_path).base_model_name_or_path
     print_master(f'Loading processor from: {model_name_or_path}')
     if model_args.model_backbone == PHI3V:
         from src.model.baseline_backbone.phi3_v.processing_phi3_v import Phi3VProcessor

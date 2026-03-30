@@ -18,6 +18,9 @@ class ModelArguments:
     lora_alpha: int = field(default=64, metadata={"help": "lora alpha"})
     lora_dropout: float = field(default=0.1, metadata={"help": "lora dropout"})
     lora_target_modules: str = field(default="qkv_proj,o_proj,gate_up_proj,down_proj,k_proj,q_proj,out_proj,v_proj,gate_proj,up_proj", metadata={"help": "lora target modules"})
+    lora_init_path: str = field(default=None, metadata={"help": "Path to an existing LoRA adapter dir (contains adapter_config.json) to initialize from. It will be frozen. If model_name points to an adapter dir, it will be used automatically."})
+    lora_init_merge: bool = field(default=True, metadata={"help": "Merge the init adapter into base weights before adding a new LoRA adapter for training."})
+    lora_new_adapter_name: str = field(default="extra", metadata={"help": "Adapter name for the newly-added LoRA adapter (only used when adapter composition is supported)."})
     num_crops: int = field(default=16, metadata={"help": "number of crops used in image encoder"})
     uigraph_use: bool = field(default=False, metadata={"help": "Enable ui graph for token selection"})
     uigraph_diff: int = field(default=1, metadata={"help": "Pixel difference used for constructing ui graph for token selection"})
@@ -45,10 +48,6 @@ class DataArguments:
     resize_min_pixels: int = field(default=28*28*4, metadata={"help": "The min pixels of the image to resize the image. This is only works when `--resize_use_processor true`."})
     resize_max_pixels: int = field(default=28*28*384, metadata={"help": "The max pixels of the image to resize the image. This is only works when `--resize_use_processor true`."})
     image_decay_factor: float = field(default=None, metadata={"help": "The image decay factor for resizing temporal images"})
-    video_framewise_embeddings: bool = field(default=False, metadata={"help": "If true, encode videos frame-by-frame and return per-sample embeddings with shape (N_frames, D) (saved as a Python list)."})
-    framewise_scoring: str = field(default="mean", metadata={"help": "Scoring for framewise video embeddings: mean | maxsim. Only used when video_framewise_embeddings is true."})
-    framewise_maxsim_qry_batch_size: int = field(default=64, metadata={"help": "Query batch size for maxsim scoring."})
-    framewise_maxsim_cand_batch_size: int = field(default=256, metadata={"help": "Candidate batch size for maxsim scoring."})
     num_hardneg: int = field(default=0, metadata={"help": "hard negative number"})
 
 

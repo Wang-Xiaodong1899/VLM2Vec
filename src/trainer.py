@@ -642,6 +642,17 @@ class GradCacheLateProcessTrainer(MMEBTrainer):
     """
     Adapted from gradcache repo.
     """
+
+    @staticmethod
+    def _set_only_post_decoder_trainable(model: torch.nn.Module) -> None:
+        base_model = model.module if hasattr(model, "module") else model
+        if not hasattr(base_model, "post_decoder"):
+            return
+        for p in base_model.parameters():
+            p.requires_grad = False
+        for p in base_model.post_decoder.parameters():
+            p.requires_grad = True
+
     def __init__(self, *args, **kwargs):
         self.max_length = kwargs.get("max_length", 512)
         if "max_length" in kwargs:
@@ -650,6 +661,10 @@ class GradCacheLateProcessTrainer(MMEBTrainer):
         if "model_args" in kwargs:
             del kwargs["model_args"]
         super(GradCacheLateProcessTrainer, self).__init__(*args, **kwargs)
+
+        self._set_only_post_decoder_trainable(self.model)
+        self._post_decoder_trainable_checked = False
+
         self.is_ddp = dist.is_initialized()
         self._dist_loss_scale_factor = dist.get_world_size() if self.is_ddp else 1
         loss_fn_cls = DistributedContrastiveLoss if self.is_ddp else SimpleContrastiveLoss
@@ -669,15 +684,30 @@ class GradCacheLateProcessTrainer(MMEBTrainer):
 
     def training_step(self, model, inputs, *args, **kwargs) -> torch.Tensor:
         model.train()
+        self._set_only_post_decoder_trainable(model)
+
+        base_model = model.module if hasattr(model, "module") else model
+        if hasattr(base_model, "post_decoder"):
+            if not any(p.requires_grad for p in base_model.post_decoder.parameters()):
+                raise RuntimeError("post_decoder is present but all its parameters are frozen (requires_grad=False).")
+
+        if not getattr(self, "_post_decoder_trainable_checked", False):
+            if hasattr(base_model, "post_decoder"):
+                total_params = sum(p.numel() for p in base_model.parameters())
+                trainable_params = sum(p.numel() for p in base_model.parameters() if p.requires_grad)
+                logger.info(f"Trainable params (post_decoder only, trainer-side): {trainable_params:,} / {total_params:,}")
+                logger.info(f"model_backbone (trainer-side): {getattr(base_model, 'model_backbone', None)}")
+            self._post_decoder_trainable_checked = True
+
         queries, targets = inputs
-        
+
         if hasattr(model, "module"):
             device = model.module.device
         elif hasattr(model, "device"):
             device = model.device
         else:
             device = next(model.parameters()).device
-            
+
         queries = batch_to_device(queries, device)
         targets = batch_to_device(targets, device)
 
@@ -697,9 +727,18 @@ class GradCacheLateProcessTrainer(MMEBTrainer):
 
         if state_dict is None:
             state_dict = self.model.state_dict()
-        prefix = 'encoder.'
-        assert all(k.startswith(prefix) for k in state_dict.keys()), list(state_dict.keys())
-        state_dict = {k[len(prefix):]: v for k, v in state_dict.items()}
+        # prefix = 'encoder.'
+        # assert all(k.startswith(prefix) for k in state_dict.keys()), list(state_dict.keys())
+        # state_dict = {k[len(prefix):]: v for k, v in state_dict.items()}
+        prefixes = ['encoder.', 'post_decoder.']
+        assert all(any(k.startswith(p) for p in prefixes) for k in state_dict.keys()), list(state_dict.keys())
+        state_dict = {
+            k[len(p):]: v 
+            for k, v in state_dict.items() 
+            for p in prefixes 
+            if k.startswith(p)
+        }
+        
         self.model.encoder.save_pretrained(
             output_dir, state_dict=state_dict, safe_serialization=self.args.save_safetensors
         )
