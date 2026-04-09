@@ -2,88 +2,61 @@ import os
 from typing import Any, Dict, List, Optional
 
 import datasets
-import random
+from datasets import Features, Value, Sequence
 
-from src.data.dataset.base_pair_dataset import AutoPairDataset, add_metainfo_hook, MULTIMODAL_FEATURES, RESOLUTION_MAPPING
+from src.data.dataset.base_pair_dataset import AutoPairDataset, add_metainfo_hook, RESOLUTION_MAPPING
+from src.data.dataset.clip2keyframe import (
+    _resolve_frame_dir,
+    _pick_by_indices,
+    _clip_indices,
+    _normalize_int_list,
+    TASK_INST_QRY,
+    TASK_INST_TGT,
+)
 from src.model.processor import process_input_text
 from src.utils.vision_utils.vision_utils import load_frames, sample_frames
 
 
-TASK_INST_QRY = "Based on the question, identify the key content in the video."
-TASK_INST_TGT = "Understand the content of the provided video."
+TASK_INST_ANS = "Answer the question."
 
 
-def _resolve_frame_dir(frame_basedir: str, video: str) -> Optional[str]:
-    video_noext = os.path.splitext(video)[0]
-    normalized = video_noext.replace("/", "_")
-    candidates = [
-        os.path.join(frame_basedir, normalized),
-        os.path.join(frame_basedir, video_noext),
-        os.path.join(frame_basedir, video.replace("/", "_")),
-        os.path.join(frame_basedir, os.path.basename(video_noext)),
-    ]
-    for cand in candidates:
-        if os.path.isdir(cand):
-            return cand
+MULTIMODAL_FEATURES_WITH_ANSWER = Features(**{
+    "query_text": Value(dtype="string"),
+    "query_image": {
+        "paths": Sequence(Value(dtype="string")),
+        "bytes": Sequence(Value(dtype="binary")),
+        "resolutions": Sequence(Sequence(Value(dtype="int64"), length=2)),
+    },
+    "pos_text": Value(dtype="string"),
+    "pos_image": {
+        "paths": Sequence(Value(dtype="string")),
+        "bytes": Sequence(Value(dtype="binary")),
+        "resolutions": Sequence(Sequence(Value(dtype="int64"), length=2)),
+    },
+    "answer_text": Value(dtype="string"),
+    "neg_text": Sequence(Value(dtype="string")),
+    "neg_image": Sequence({
+        "paths": Sequence(Value(dtype="string")),
+        "bytes": Sequence(Value(dtype="binary")),
+        "resolutions": Sequence(Sequence(Value(dtype="int64"), length=2)),
+    }),
+    "global_dataset_name": Value(dtype="string"),
+})
+
+
+def _normalize_answer(ans: Any) -> Optional[str]:
+    if ans is None:
+        return None
+    if isinstance(ans, str):
+        s = ans.strip()
+        return s if s else None
+    if isinstance(ans, list) and ans:
+        return _normalize_answer(ans[0])
     return None
 
 
-def _pick_by_indices(frames: List[str], indices: List[int]) -> List[str]:
-    out = []
-    for idx in indices:
-        if 0 <= idx < len(frames):
-            out.append(frames[idx])
-    return out
-
-
-def _clip_indices(clip_num: Any, interval_s: int, max_idx: int, max_context_clip: int = 0) -> List[int]:
-    if clip_num is None:
-        return []
-
-    if isinstance(clip_num, str):
-        if clip_num.lower() == "all":
-            return list(range(0, max_idx + 1))
-        return []
-
-    if isinstance(clip_num, (int, float)):
-        clip_list = [int(clip_num)]
-    elif isinstance(clip_num, list):
-        clip_list = [int(x) for x in clip_num if isinstance(x, (int, float)) or (isinstance(x, str) and str(x).isdigit())]
-    else:
-        return []
-
-    indices: List[int] = []
-    for c in clip_list:
-        # random get a left_context from nums [0,1,2,...max_context_clip]
-        left_context = random.randint(0, max_context_clip)
-        right_context = random.randint(0, max_context_clip)
-        start_clip = c - left_context
-        end_clip = c + right_context
-        for k in range(start_clip, end_clip + 1):
-            start = k * interval_s
-            end = start + interval_s
-            indices.extend(list(range(start, end)))
-
-    indices = sorted(set(i for i in indices if 0 <= i <= max_idx))
-    return indices
-
-
-def _normalize_int_list(values: Any) -> List[int]:
-    if values is None:
-        return []
-    if isinstance(values, list):
-        out = []
-        for v in values:
-            try:
-                out.append(int(v))
-            except Exception:
-                continue
-        return out
-    return []
-
-
 @add_metainfo_hook
-def data_prepare_videoitg_clip_keyframe(batch_dict: Dict[str, Any], *args, **kwargs) -> Dict[str, Any]:
+def data_prepare_videoitg_clip_keyframe_with_answer(batch_dict: Dict[str, Any], *args, **kwargs) -> Dict[str, Any]:
     model_backbone = kwargs["model_backbone"]
     image_resolution = kwargs["image_resolution"]
     frame_basedir = kwargs["video_frame_basedir"]
@@ -97,15 +70,19 @@ def data_prepare_videoitg_clip_keyframe(batch_dict: Dict[str, Any], *args, **kwa
     if default_res is None:
         default_res = (224, 224)
 
-    query_texts, query_images, pos_texts, pos_images, neg_texts, neg_images = [], [], [], [], [], []
+    query_texts, query_images, pos_texts, pos_images, answer_texts, answer_images, neg_texts, neg_images = [], [], [], [], [], [], [], []
 
-    for data_id, video, question, frame_num, clip_num in zip(
-        batch_dict.get("id", []),
+    for video, question, frame_num, clip_num, answer in zip(
         batch_dict.get("video", []),
         batch_dict.get("question", []),
         batch_dict.get("frame_num", []),
         batch_dict.get("clip_num", []),
+        batch_dict.get("answer", []),
     ):
+        answer = _normalize_answer(answer)
+        if answer is None:
+            continue
+
         frame_dir = _resolve_frame_dir(frame_basedir, video)
         if frame_dir is None:
             continue
@@ -144,6 +121,7 @@ def data_prepare_videoitg_clip_keyframe(batch_dict: Dict[str, Any], *args, **kwa
             pos_text = process_input_text(TASK_INST_TGT, model_backbone, text=question, add_video_token=True)
         else:
             pos_text = process_input_text(TASK_INST_TGT, model_backbone, add_video_token=True)
+        answer_text = process_input_text(TASK_INST_ANS, model_backbone, text=answer, add_video_token=False)
 
         query_frames = {
             "bytes": [None] * len(clip_paths),
@@ -160,6 +138,8 @@ def data_prepare_videoitg_clip_keyframe(batch_dict: Dict[str, Any], *args, **kwa
         query_images.append(query_frames)
         pos_texts.append(pos_text)
         pos_images.append(pos_frames)
+        answer_texts.append(answer_text)
+        answer_images.append([])
         neg_texts.append([])
         neg_images.append([{"bytes": [b""], "paths": [""], "resolutions": [(224, 224)]}])
 
@@ -168,16 +148,18 @@ def data_prepare_videoitg_clip_keyframe(batch_dict: Dict[str, Any], *args, **kwa
         "query_image": query_images,
         "pos_text": pos_texts,
         "pos_image": pos_images,
+        "answer_text": answer_texts,
+        "answer_image": answer_images,
         "neg_text": neg_texts,
         "neg_image": neg_images,
     }
 
 
-DATASET_PARSER_NAME = "videoitg_clip_keyframe"
+DATASET_PARSER_NAME = "videoitg_clip_keyframe_answer"
 
 
 @AutoPairDataset.register(DATASET_PARSER_NAME)
-def load_videoitg_clip_keyframe_dataset(model_args, data_args, training_args, *args, **kwargs):
+def load_videoitg_clip_keyframe_answer_dataset(model_args, data_args, training_args, *args, **kwargs):
     dataset_name = kwargs.get("dataset_name", DATASET_PARSER_NAME)
     assert "dataset_path" in kwargs, "`dataset_path` should be given for loading videoitg dataset."
     assert "video_frame_basedir" in kwargs, "`video_frame_basedir` should be given for loading videoitg dataset."
@@ -201,11 +183,11 @@ def load_videoitg_clip_keyframe_dataset(model_args, data_args, training_args, *a
 
     remove_columns = list(dataset.column_names)
     dataset = dataset.map(
-        lambda x: data_prepare_videoitg_clip_keyframe(x, **kwargs),
+        lambda x: data_prepare_videoitg_clip_keyframe_with_answer(x, **kwargs),
         batched=True,
         batch_size=128,
         drop_last_batch=True,
-        features=MULTIMODAL_FEATURES,
+        features=MULTIMODAL_FEATURES_WITH_ANSWER,
         remove_columns=remove_columns,
     )
 

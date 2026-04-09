@@ -17,6 +17,7 @@ from src.model.vlm_backbone.qwen2_vl.modeling_qwen2_vl import (
 )
 
 from .model import MMEBModel
+from src.utils.basic_utils import print_rank, print_master
 
 
 class PostQwen2VLDecoderStack(nn.Module):
@@ -142,7 +143,7 @@ class MMEBModelPostQwen2VLLayers(MMEBModel):
         pooling: str = "last",
         normalize: bool = False,
         temperature: float = 0.02,
-        post_qwen2vl_layers: int = 1,
+        post_qwen2vl_layers: int = 8, # 1, 4, 8
     ):
         super().__init__(encoder=encoder, pooling=pooling, normalize=normalize, temperature=temperature)
         self.post_decoder = PostQwen2VLDecoderStack(self.config, num_layers=post_qwen2vl_layers)
@@ -167,12 +168,12 @@ class MMEBModelPostQwen2VLLayers(MMEBModel):
             hidden_states = self.encoder(**input, return_dict=True, output_hidden_states=True)
         else:
             with torch.no_grad():
-                print("encoder is not trainable, use no_grad")
+                # print("encoder is not trainable, use no_grad")
                 hidden_states = self.encoder(**input, return_dict=True, output_hidden_states=True)
         hidden_states = hidden_states.hidden_states[-1]
         if is_target:
             # no pass post decoder
-            print(f"tgt hidden_states.shape: {hidden_states.shape}")
+            # print(f"tgt hidden_states.shape: {hidden_states.shape}")
             pooled_output = self._pooling(hidden_states, input["attention_mask"])
             return pooled_output
         hidden_states = self.post_decoder(
@@ -181,30 +182,72 @@ class MMEBModelPostQwen2VLLayers(MMEBModel):
             position_ids=input.get("position_ids"),
             cache_position=input.get("cache_position"),
         )
-        print(f"qry involve hidden_states.shape: {hidden_states.shape}")
+        # print(f"post decoder hidden_states.shape: {hidden_states.shape}")
+        # print(f"qry involve hidden_states.shape: {hidden_states.shape}")
         pooled_output = self._pooling(hidden_states, input["attention_mask"])
         return pooled_output
 
-    def forward(self, qry: Dict[str, Tensor] = None, tgt: Dict[str, Tensor] = None, *args, **kwargs):
+    def forward(self, qry: Dict[str, Tensor] = None, tgt: Dict[str, Tensor] = None,
+        ans: Dict[str, Tensor] = None,
+        qp_loss_weight: float = 1.0,
+        qa_loss_weight: float = 0.0,
+        pa_loss_weight: float = 0.0,
+        *args, **kwargs):
         qry_reps = self.encode_input(qry, is_target=False) if qry else None  # (bsz_per_device, dim)
         tgt_reps = self.encode_input(tgt, is_target=False) if tgt else None # (bsz_per_device, dim)
-
-        if qry_reps is None or tgt_reps is None:
+        ans_reps = self.encode_input(ans, is_target=False) if ans else None # (bsz_per_device, dim)
+        if qry_reps is None and tgt_reps is None and ans_reps is None:
+            return {"qry_reps": None, "tgt_reps": None}
+        if qry_reps is None and tgt_reps is None:
+            return {"qry_reps": None, "tgt_reps": ans_reps}
+        if qry_reps is None or (tgt_reps is None and ans_reps is None):
             return {"qry_reps": qry_reps, "tgt_reps": tgt_reps}
+        if tgt_reps is None and ans_reps is not None:
+            return {"qry_reps": qry_reps, "tgt_reps": ans_reps}
+        
+        def _contrastive_loss(all_left: Tensor, all_right: Tensor) -> Tensor:
+            scores = self.compute_similarity(all_left, all_right)
+            scores = scores.view(all_left.size(0), -1)
+            target = torch.arange(scores.size(0), device=scores.device, dtype=torch.long)
+            target = target * (all_left.size(0) // all_right.size(0))
+            return self.cross_entropy(scores / self.temperature, target)
 
         if self.is_ddp:
             all_qry_reps = self._dist_gather_tensor(qry_reps)
             all_tgt_reps = self._dist_gather_tensor(tgt_reps)
+            all_ans_reps = self._dist_gather_tensor(ans_reps) if ans_reps is not None else None
         else:
             all_qry_reps = qry_reps
             all_tgt_reps = tgt_reps
+            all_ans_reps = ans_reps
 
-        scores = self.compute_similarity(all_qry_reps, all_tgt_reps)
-        scores = scores.view(all_qry_reps.size(0), -1)
-        target = torch.arange(scores.size(0), device=scores.device, dtype=torch.long)
-        target = target * (all_qry_reps.size(0) // all_tgt_reps.size(0))
-        loss = self.cross_entropy(scores / self.temperature, target)
+        # scores = self.compute_similarity(all_qry_reps, all_tgt_reps)
+        # scores = scores.view(all_qry_reps.size(0), -1)
+        # target = torch.arange(scores.size(0), device=scores.device, dtype=torch.long)
+        # target = target * (all_qry_reps.size(0) // all_tgt_reps.size(0))
+        # loss = self.cross_entropy(scores / self.temperature, target)
+        total_loss = torch.zeros((), device=all_qry_reps.device)
+        if all_tgt_reps is not None and qp_loss_weight != 0:
+            # total_loss = total_loss + float(qp_loss_weight) * _contrastive_loss(all_qry_reps, all_tgt_reps)
+            qp_loss = float(qp_loss_weight) * _contrastive_loss(all_qry_reps, all_tgt_reps)
+            total_loss = total_loss + qp_loss
+        else:
+            qp_loss = None
+        if all_ans_reps is not None and qa_loss_weight != 0:
+            # total_loss = total_loss + float(qa_loss_weight) * _contrastive_loss(all_qry_reps, all_ans_reps)
+            qa_loss = float(qa_loss_weight) * _contrastive_loss(all_qry_reps, all_ans_reps)
+            total_loss = total_loss + qa_loss
+        else:
+            qa_loss = None
+        if all_ans_reps is not None and pa_loss_weight != 0:
+            # total_loss = total_loss + float(pa_loss_weight) * _contrastive_loss(all_tgt_reps, all_ans_reps)
+            pa_loss = float(pa_loss_weight) * _contrastive_loss(all_tgt_reps, all_ans_reps)
+            total_loss = total_loss + pa_loss
+        else:
+            pa_loss = None
+        print_rank(f"total_loss: {total_loss}, qp_loss: {qp_loss}, qa_loss: {qa_loss}, pa_loss: {pa_loss}")
         if self.is_ddp:
-            loss = loss * self.world_size
+            # loss = loss * self.world_size
+            total_loss = total_loss * self.world_size
 
-        return loss
+        return total_loss

@@ -18,7 +18,7 @@ import math
 
 from src.data.collator.train_collator import split_vlm_inputs, get_dense_rep, split_and_process_vlm_inputs
 from src.model.model import MMEBModel
-from src.loss import SimpleContrastiveLoss, DistributedContrastiveLoss
+from src.loss import SimpleContrastiveLoss, DistributedContrastiveLoss, MultiPairContrastiveLoss, DistributedMultiPairContrastiveLoss
 from src.grad_cache.grad_cache import GradCache
 from torch.utils.data import DataLoader, Dataset, IterableDataset, RandomSampler, SequentialSampler
 
@@ -94,8 +94,24 @@ class MMEBTrainer(Trainer):
         return batch_samples, num_items_in_batch
 
     def compute_loss(self, model, inputs, *args, **kwargs):
-        qry_inputs, tgt_inputs = inputs
-        return model(qry=qry_inputs, tgt=tgt_inputs)
+        if len(inputs) == 2:
+            qry_inputs, tgt_inputs = inputs
+            return model(
+                qry=qry_inputs,
+                tgt=tgt_inputs,
+                qp_loss_weight=self.args.qp_loss_weight,
+                qa_loss_weight=0.0,
+                pa_loss_weight=0.0,
+            )
+        qry_inputs, tgt_inputs, ans_inputs = inputs
+        return model(
+            qry=qry_inputs,
+            tgt=tgt_inputs,
+            ans=ans_inputs,
+            qp_loss_weight=self.args.qp_loss_weight,
+            qa_loss_weight=self.args.qa_loss_weight,
+            pa_loss_weight=self.args.pa_loss_weight,
+        )
 
     def _save(self, output_dir: Optional[str] = None, state_dict=None):
         os.makedirs(output_dir, exist_ok=True)
@@ -667,20 +683,38 @@ class GradCacheLateProcessTrainer(MMEBTrainer):
 
         self.is_ddp = dist.is_initialized()
         self._dist_loss_scale_factor = dist.get_world_size() if self.is_ddp else 1
-        loss_fn_cls = DistributedContrastiveLoss if self.is_ddp else SimpleContrastiveLoss
-        loss_fn = loss_fn_cls(temperature=self.model.temperature)
-        # process_fn = functools.partial(process_vlm_inputs_fns[self.args.model_backbone], processor=self.processing_class, max_length=self.max_length)
 
-        self.gc = GradCache(
+        loss_fn_pair_cls = DistributedContrastiveLoss if self.is_ddp else SimpleContrastiveLoss
+        loss_fn_pair = loss_fn_pair_cls(temperature=self.model.temperature)
+
+        self.gc_pair = GradCache(
             models=[self.model, self.model],
             chunk_sizes=[self.args.gc_q_chunk_size, self.args.gc_p_chunk_size],
-            loss_fn=loss_fn,
+            loss_fn=loss_fn_pair,
             split_input_fn=split_and_process_vlm_inputs,
-            # process_fn=process_fn,
             get_rep_fn=get_dense_rep,
             fp16=self.args.fp16,
-            scaler=self.scaler if self.args.fp16 else None
+            scaler=self.scaler if self.args.fp16 else None,
         )
+
+        self.gc_triple = None
+        if getattr(self.args, "qa_loss_weight", 0.0) != 0.0 or getattr(self.args, "pa_loss_weight", 0.0) != 0.0:
+            loss_fn_triple_cls = DistributedMultiPairContrastiveLoss if self.is_ddp else MultiPairContrastiveLoss
+            loss_fn_triple = loss_fn_triple_cls(
+                qp_loss_weight=self.args.qp_loss_weight,
+                qa_loss_weight=self.args.qa_loss_weight,
+                pa_loss_weight=self.args.pa_loss_weight,
+                temperature=self.model.temperature,
+            )
+            self.gc_triple = GradCache(
+                models=[self.model, self.model, self.model],
+                chunk_sizes=[self.args.gc_q_chunk_size, self.args.gc_p_chunk_size, self.args.gc_p_chunk_size],
+                loss_fn=loss_fn_triple,
+                split_input_fn=split_and_process_vlm_inputs,
+                get_rep_fn=get_dense_rep,
+                fp16=self.args.fp16,
+                scaler=self.scaler if self.args.fp16 else None,
+            )
 
     def training_step(self, model, inputs, *args, **kwargs) -> torch.Tensor:
         model.train()
@@ -699,7 +733,11 @@ class GradCacheLateProcessTrainer(MMEBTrainer):
                 logger.info(f"model_backbone (trainer-side): {getattr(base_model, 'model_backbone', None)}")
             self._post_decoder_trainable_checked = True
 
-        queries, targets = inputs
+        if len(inputs) == 2:
+            queries, targets = inputs
+            answers = None
+        else:
+            queries, targets, answers = inputs
 
         if hasattr(model, "module"):
             device = model.module.device
@@ -710,14 +748,37 @@ class GradCacheLateProcessTrainer(MMEBTrainer):
 
         queries = batch_to_device(queries, device)
         targets = batch_to_device(targets, device)
+        if answers is not None:
+            answers = batch_to_device(answers, device)
 
         _distributed = dist.is_initialized() and dist.get_world_size() > 1
         if _distributed:
-            gc_queries, gc_targets = {'qry': queries}, {'tgt': targets}
-            self.gc.models = [model, model]
-            loss = self.gc(gc_queries, gc_targets, no_sync_except_last=True)
+            gc_queries, gc_targets = {"qry": queries}, {"tgt": targets}
+            if answers is None or self.gc_triple is None:
+                self.gc_pair.models = [model, model]
+                loss = self.gc_pair(gc_queries, gc_targets, no_sync_except_last=True)
+            else:
+                gc_answers = {"tgt": answers}
+                self.gc_triple.models = [model, model, model]
+                loss = self.gc_triple(gc_queries, gc_targets, gc_answers, no_sync_except_last=True)
         else:
-            loss = model(queries, targets)
+            if answers is None:
+                loss = model(
+                    qry=queries,
+                    tgt=targets,
+                    qp_loss_weight=self.args.qp_loss_weight,
+                    qa_loss_weight=0.0,
+                    pa_loss_weight=0.0,
+                )
+            else:
+                loss = model(
+                    qry=queries,
+                    tgt=targets,
+                    ans=answers,
+                    qp_loss_weight=self.args.qp_loss_weight,
+                    qa_loss_weight=self.args.qa_loss_weight,
+                    pa_loss_weight=self.args.pa_loss_weight,
+                )
         return loss / self._dist_loss_scale_factor
 
 

@@ -16,3 +16,4 @@ from .didemo_dataset import load_didemo_dataset
 from .cls_dataset import load_video_class_dataset
 from .ssv2_dataset import load_ssv2_dataset
 from .clip2keyframe import load_videoitg_clip_keyframe_dataset
+from .clip2keyframe_with_answer import load_videoitg_clip_keyframe_answer_dataset

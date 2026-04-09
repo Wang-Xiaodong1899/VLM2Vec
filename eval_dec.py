@@ -23,7 +23,8 @@ from src.arguments import ModelArguments, DataArguments, TrainingArguments
 from src.data.collator.eval_collator import MultimodalEvalDataCollator
 from src.data.eval_dataset.base_eval_dataset import AutoEvalPairDataset, generate_cand_dataset
 from src.utils.eval_utils.metrics import RankingMetrics
-from src.model.model import MMEBModel
+# from src.model.model import MMEBModel
+from src.model.model_dec import MMEBModelPostQwen2VLLayers
 from src.model.processor import get_backbone_name, load_processor, COLPALI
 from src.utils.basic_utils import batch_to_device, print_rank, print_master
 
@@ -45,7 +46,7 @@ def pad_dataset_to_divisible(dataset, world_size):
 
 
 def encode_embeddings(
-    model: MMEBModel,
+    model: MMEBModelPostQwen2VLLayers,
     loader: DataLoader,
     training_args: TrainingArguments,
     model_args: ModelArguments,
@@ -179,8 +180,42 @@ def main():
     # Step 1: Only the master process (rank 0) downloads the model.
     if local_rank == 0:
         processor = load_processor(model_args, data_args)
-        model = MMEBModel.load(model_args, is_trainable=False, processor=processor)
+        model = MMEBModelPostQwen2VLLayers.load(model_args, is_trainable=False, processor=processor)
         print_master(f"[rank=0] Loading the model from Huggingface: {model_args.model_name}...")
+        # 打印model的参数名，只打印包括layers的参数名
+        # model 是nn.Module，包含多个子模块，每个子模块都有自己的参数
+        # 只打印打印layers模块的参数名
+        print_master(f"Model Layers Parameters:")
+        for name, param in model.named_parameters():
+            if "layers" in name:
+                print_master(f"{name}: {param.shape}")
+        # 手动load post_decoder.开头的参数的权重
+        from safetensors.torch import load_file
+        # 加载 safetensors 文件
+        # state_dict = load_file(os.path.join(model_args.model_name, 'model.safetensors'))
+        # # 过滤出 post_decoder 开头的参数
+        # post_decoder_dict = {k: v for k, v in state_dict.items() if k.startswith('post_decoder')}
+        import glob
+        state_dict = {}
+        for file_path in glob.glob(os.path.join(model_args.model_name, '*.safetensors')):
+            state_dict.update(load_file(file_path))
+        post_decoder_dict = {k: v for k, v in state_dict.items() if k.startswith('post_decoder')}
+
+        if post_decoder_dict:
+            # 有 post_decoder，直接使用
+            filtered_state_dict = post_decoder_dict
+        else:
+            # 没有 post_decoder，取 layers 开头的并改名
+            filtered_state_dict = {}
+            for k, v in state_dict.items():
+                if k.startswith('layers'):
+                    new_key = k.replace('layers', 'post_decoder.layers', 1)
+                    filtered_state_dict[new_key] = v
+
+        # 加载到模型中
+        model.load_state_dict(filtered_state_dict, strict=False)
+        print(f"Loaded {len(filtered_state_dict)} post_decoder parameters")
+        
     # Step 2: All processes wait here. The non-master processes will pause
     # until the master process (rank 0) finishes downloading and exits this barrier.
     if torch.distributed.is_initialized():
@@ -190,7 +225,31 @@ def main():
         print_rank(f"Loading the model from cache...")
         processor = load_processor(model_args, data_args)
         time.sleep(random.randint(2 * local_rank, 3 * local_rank))
-        model = MMEBModel.load(model_args, is_trainable=False, processor=processor)
+        model = MMEBModelPostQwen2VLLayers.load(model_args, is_trainable=False, processor=processor)
+        from safetensors.torch import load_file
+        # 加载 safetensors 文件
+        # state_dict = load_file(os.path.join(model_args.model_name, 'model.safetensors'))
+        # post_decoder_dict = {k: v for k, v in state_dict.items() if k.startswith('post_decoder')}
+        import glob
+        state_dict = {}
+        for file_path in glob.glob(os.path.join(model_args.model_name, '*.safetensors')):
+            state_dict.update(load_file(file_path))
+        post_decoder_dict = {k: v for k, v in state_dict.items() if k.startswith('post_decoder')}
+
+        if post_decoder_dict:
+            # 有 post_decoder，直接使用
+            filtered_state_dict = post_decoder_dict
+        else:
+            # 没有 post_decoder，取 layers 开头的并改名
+            filtered_state_dict = {}
+            for k, v in state_dict.items():
+                if k.startswith('layers'):
+                    new_key = k.replace('layers', 'post_decoder.layers', 1)
+                    filtered_state_dict[new_key] = v
+
+        # 加载到模型中
+        model.load_state_dict(filtered_state_dict, strict=False)
+        print(f"Loaded {len(filtered_state_dict)} post_decoder parameters")
     model.eval()
     model = model.to(training_args.device, dtype=torch.bfloat16)
     with open(data_args.dataset_config, 'r') as yaml_file:

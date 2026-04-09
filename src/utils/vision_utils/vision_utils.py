@@ -281,6 +281,8 @@ def process_video_frames(frame_dir, num_frames=None):
         return frames
     elif num_frames and num_frames <= len(frames):
         frames = sample_frames(frames, num_segments=num_frames)
+    elif num_frames > len(frames):
+        frames = sample_frames(frames, num_segments=num_frames)
     return frames
 
 

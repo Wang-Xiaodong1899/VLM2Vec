@@ -33,6 +33,7 @@ class MMEBModel(nn.Module):
                  pooling: str = 'last',
                  normalize: bool = False,
                  temperature: float = 0.02,
+                 post_qwen2vl_layers: int = 0
                  ):
         super().__init__()
         self.config = encoder.config
@@ -126,6 +127,7 @@ class MMEBModel(nn.Module):
     def build(cls, model_args: ModelArguments, **kwargs):
         base_model_name_or_path = model_args.model_name
         init_adapter_path = getattr(model_args, "lora_init_path", None)
+        print(f'!!!!!!!!!!!!!!!! init_adapter_path: {init_adapter_path}!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
         if isinstance(base_model_name_or_path, str) and os.path.isdir(base_model_name_or_path) and os.path.exists(
             os.path.join(base_model_name_or_path, "adapter_config.json")
         ):
@@ -206,7 +208,7 @@ class MMEBModel(nn.Module):
         merged_init = False
 
         if init_adapter_path:
-            print_master(f'Loading init LoRA adapter from {init_adapter_path}')
+            print(f'Loading init LoRA adapter from {init_adapter_path}')
             init_lora_config = LoraConfig.from_pretrained(init_adapter_path)
             try:
                 encoder = PeftModel.from_pretrained(
@@ -217,6 +219,7 @@ class MMEBModel(nn.Module):
                     adapter_name="init",
                 )
                 init_adapter_name = "init"
+                print(f'!!!!!!!!!!!!!!!! Config init_adapter_path: {init_adapter_path}!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
             except TypeError:
                 encoder = PeftModel.from_pretrained(
                     base_model,
@@ -227,8 +230,16 @@ class MMEBModel(nn.Module):
                 init_adapter_name = getattr(encoder, "active_adapter", None)
 
             if getattr(model_args, "lora_init_merge", True):
+                # print(type(encoder), isinstance(encoder, PeftModel))
+                # for n, p in encoder.named_parameters():
+                #     if "lora" in n or ".init." in n:
+                #         print(n, p.requires_grad)
                 encoder = encoder.merge_and_unload()
                 merged_init = True
+                # print(f'!!!!!!!!!!!!!!!! Build Merge init_adapter_path: {init_adapter_path}!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+                # 打印encoder中的参数名
+                # for n, p in encoder.named_parameters():
+                #     print(n)
 
         if model_args.lora:
             lora_config = LoraConfig(
@@ -270,6 +281,7 @@ class MMEBModel(nn.Module):
             pooling=model_args.pooling,
             normalize=model_args.normalize,
             temperature=model_args.temperature,
+            post_qwen2vl_layers=model_args.emb_dec_layer,
         )
         model.model_backbone = model_backbone
         return model
@@ -353,8 +365,9 @@ class MMEBModel(nn.Module):
             )
 
         init_adapter_path = getattr(model_args, "lora_init_path", None)
+        print(f'!!!!!!!!!!!!!!!! init_adapter_path: {init_adapter_path}!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
         if init_adapter_path:
-            print_master(f'Loading init LoRA adapter from {init_adapter_path}')
+            print(f'Loading init LoRA adapter from {init_adapter_path}')
             init_lora_config = LoraConfig.from_pretrained(init_adapter_path)
             init_model = PeftModel.from_pretrained(
                 base_model,
@@ -362,7 +375,15 @@ class MMEBModel(nn.Module):
                 config=init_lora_config,
                 is_trainable=False,
             )
+            print(type(init_model), isinstance(init_model, PeftModel))
+            # for n, p in init_model.named_parameters():
+            #     if "lora" in n or ".init." in n:
+            #         print(n, p.requires_grad)
             base_model = init_model.merge_and_unload()
+            # print(f'!!!!!!!!!!!!!!!! Load Merge init_adapter_path: {init_adapter_path}!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+            # 打印encoder中的参数名
+            # for n, p in base_model.named_parameters():
+            #     print(n)
 
         if model_args.lora:
             print_master(f'Loading LoRA from {model_name_or_path}')
@@ -381,6 +402,7 @@ class MMEBModel(nn.Module):
                 pooling=model_args.pooling,
                 normalize=model_args.normalize,
                 temperature=model_args.temperature,
+                post_qwen2vl_layers=model_args.emb_dec_layer
             )
         else:
             model = cls(
@@ -388,6 +410,7 @@ class MMEBModel(nn.Module):
                 pooling=model_args.pooling,
                 normalize=model_args.normalize,
                 temperature=model_args.temperature,
+                post_qwen2vl_layers=model_args.emb_dec_layer
             )
 
         model.model_backbone = model_args.model_backbone

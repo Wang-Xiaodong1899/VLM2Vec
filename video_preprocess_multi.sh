@@ -1,0 +1,1 @@
+python video_preprocess.py --json_path video_itg_data_multi_clip_167446.json --video_root /mnt/bn/wxd-video-understanding/wangxd/data --out_root Video_Frames_multi_clip

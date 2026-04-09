@@ -41,6 +41,79 @@ class DistributedContrastiveLoss(SimpleContrastiveLoss):
         gathered[self.rank] = t
         return torch.cat(gathered, dim=0)
 
+
+class MultiPairContrastiveLoss(SimpleContrastiveLoss):
+    def __init__(
+        self,
+        qp_loss_weight: float = 1.0,
+        qa_loss_weight: float = 0.0,
+        pa_loss_weight: float = 0.0,
+        temperature: float = 0.02,
+    ):
+        super().__init__(temperature=temperature)
+        self.qp_loss_weight = qp_loss_weight
+        self.qa_loss_weight = qa_loss_weight
+        self.pa_loss_weight = pa_loss_weight
+
+    def __call__(self, qry: Tensor, tgt: Tensor, ans: Tensor, **kwargs) -> Tensor:
+        loss = torch.zeros((), device=qry.device)
+        if self.qp_loss_weight != 0:
+            # loss = loss + float(self.qp_loss_weight) * super().__call__(qry, tgt, **kwargs)
+            qp_loss = float(self.qp_loss_weight) * super().__call__(qry, tgt, **kwargs)
+            loss = loss + qp_loss
+        else:
+            qp_loss = None
+        if self.qa_loss_weight != 0:
+            # loss = loss + float(self.qa_loss_weight) * super().__call__(qry, ans, **kwargs)
+            qa_loss = float(self.qa_loss_weight) * super().__call__(qry, ans, **kwargs)
+            loss = loss + qa_loss
+        else:
+            qa_loss = None
+        if self.pa_loss_weight != 0:
+            # loss = loss + float(self.pa_loss_weight) * super().__call__(tgt, ans, **kwargs)
+            pa_loss = float(self.pa_loss_weight) * super().__call__(tgt, ans, **kwargs)
+            loss = loss + pa_loss
+        else:
+            pa_loss = None
+        print(f"qp_loss: {qp_loss}, qa_loss: {qa_loss}, pa_loss: {pa_loss}")
+        return loss
+
+
+class DistributedMultiPairContrastiveLoss(MultiPairContrastiveLoss):
+    def __init__(
+        self,
+        qp_loss_weight: float = 1.0,
+        qa_loss_weight: float = 0.0,
+        pa_loss_weight: float = 0.0,
+        scale_loss: bool = True,
+        temperature: float = 0.02,
+    ):
+        assert dist.is_initialized(), "Distributed training has not been properly initialized."
+        super().__init__(
+            qp_loss_weight=qp_loss_weight,
+            qa_loss_weight=qa_loss_weight,
+            pa_loss_weight=pa_loss_weight,
+            temperature=temperature,
+        )
+        self.word_size = dist.get_world_size()
+        self.rank = dist.get_rank()
+        self.scale_loss = scale_loss
+
+    def _gather_tensor(self, t: Tensor) -> Tensor:
+        gathered = [torch.empty_like(t) for _ in range(self.word_size)]
+        dist.all_gather(gathered, t)
+        gathered[self.rank] = t
+        return torch.cat(gathered, dim=0)
+
+    def __call__(self, qry: Tensor, tgt: Tensor, ans: Tensor, **kwargs) -> Tensor:
+        dist_qry = self._gather_tensor(qry)
+        dist_tgt = self._gather_tensor(tgt)
+        dist_ans = self._gather_tensor(ans)
+        loss = super().__call__(dist_qry, dist_tgt, dist_ans, **kwargs)
+        if self.scale_loss:
+            loss = loss * self.word_size
+        return loss
+
 class InExampleContrastiveLoss:
     """
     Categorization loss: cross_entropy of 1 out of K classes (target labels)

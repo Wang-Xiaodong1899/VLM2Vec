@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+
+# echo "==> Environment"
+# echo "conda location: $(which conda)"
+# echo "Python location: $(which python)"
+# echo "Python version: $(python --version)"
+# echo ""
+
+# cd projects/VLM2Vec/ || exit
+
+# ==============================================================================
+# Configuration
+# ==============================================================================
+CUDA_VISIBLE_DEVICES="0,1,2,3"
+BATCH_SIZE=4
+MODALITIES=("video_ret")
+DATA_BASEDIR=/mnt/bn/wxd-video-understanding/wangxd/data/vlm2vec_eval
+OUTPUT_BASEDIR=exps/vlm2vec_our_f32_video_ret_dec_layer_ablation
+
+# ==> Define models and their base output paths here
+# Format: "MODEL_NAME;BASE_OUTPUT_PATH"
+declare -a MODEL_SPECS
+# MODEL_SPECS+=( "/mnt/bn/wxd-video-understanding/wangxd/VLM2Vec/outputs/Qwen2vl_2B_dec_train_only.videoitg.autoresize.lora16.BS1024.IB64.GCq8p8.NormTemp002.lr5e5.step5kwarm100.4H20-2-Fix-LoRA-3/checkpoint-100;qwen2_vl;$OUTPUT_BASEDIR/4H20-2-Fix-LoRA-3/checkpoint-100" )
+# MODEL_SPECS+=( "/mnt/bn/wxd-video-understanding/wangxd/VLM2Vec/outputs/Qwen2vl_2B_dec_train_only.videoitg.autoresize.lora16.BS1024.IB64.GCq8p8.NormTemp002.lr5e5.step5kwarm100.4H20-2-Fix-LoRA-3/checkpoint-1000;qwen2_vl;$OUTPUT_BASEDIR/4H20-2-Fix-LoRA-3/checkpoint-1000" )
+# MODEL_SPECS+=( "/mnt/bn/wxd-video-understanding/wangxd/VLM2Vec/outputs/Qwen2vl_2B_dec_train_only.videoitg.autoresize.lora16.BS1024.IB64.GCq8p8.NormTemp002.lr5e5.step5kwarm100.4H20-2-Fix-LoRA-3/checkpoint-1500;qwen2_vl;$OUTPUT_BASEDIR/4H20-2-Fix-LoRA-3/checkpoint-1500" )
+# MODEL_SPECS+=( "/mnt/bn/wxd-video-understanding/wangxd/VLM2Vec/outputs/Qwen2vl_2B_dec_train_only.videoitg.autoresize.lora16.BS1024.IB64.GCq8p8.NormTemp002.lr5e5.step5kwarm100.8H20x2-55k-Fix-LoRA-DecLayer8/checkpoint-1500;qwen2_vl;$OUTPUT_BASEDIR/8H20x3-55k-Fix-LoRA-DecLayer8/checkpoint-1500")
+# MODEL_SPECS+=( "/mnt/bn/wxd-video-understanding/wangxd/VLM2Vec/outputs/Qwen2vl_2B_dec_train_only.videoitg.autoresize.lora16.BS1024.IB64.GCq8p8.NormTemp002.lr5e5.step5kwarm100.8H20x2-55k-Fix-LoRA-DecLayer8/checkpoint-2000;qwen2_vl;$OUTPUT_BASEDIR/8H20x3-55k-Fix-LoRA-DecLayer8/checkpoint-2000")
+MODEL_SPECS+=( "/mnt/bn/wxd-video-understanding/wangxd/VLM2Vec/outputs/Qwen2vl_2B_dec_train_only.videoitg.autoresize.lora16.BS1024.IB64.GCq8p8.NormTemp002.lr5e5.step5kwarm100.8H20x2-55k-Fix-LoRA-DecLayer8/checkpoint-2500;qwen2_vl;$OUTPUT_BASEDIR/8H20x3-55k-Fix-LoRA-DecLayer8/checkpoint-2500")
+
+
+# ==============================================================================
+# Main Execution Loop
+# ==============================================================================
+# Loop through each model specification
+for spec in "${MODEL_SPECS[@]}"; do
+  # Parse the model name and base output path from the spec string
+  IFS=';' read -r MODEL_NAME MODEL_BACKBONE BASE_OUTPUT_PATH <<< "$spec"
+
+  echo "================================================="
+  echo "🚀 Processing Model: $MODEL_NAME"
+  echo "================================================="
+
+  # Loop through each modality for the current model
+  for MODALITY in "${MODALITIES[@]}"; do
+    DATA_CONFIG_PATH="experiments/public/eval/$MODALITY.yaml"
+    OUTPUT_PATH="$BASE_OUTPUT_PATH/$MODALITY/"
+
+    echo "-------------------------------------------------"
+    echo "  - Modality: $MODALITY"
+    echo "  - Output Path: $OUTPUT_PATH"
+
+    # Ensure the output directory exists
+    mkdir -p "$OUTPUT_PATH"
+
+    cmd="CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES torchrun --nproc_per_node=4 --master_port=2233 --max_restarts=0 eval_dec.py \
+      --emb_dec_layer 8 \
+      --pooling eos \
+      --normalize true \
+      --per_device_eval_batch_size $BATCH_SIZE \
+      --model_backbone \"$MODEL_BACKBONE\" \
+      --model_name \"$MODEL_NAME\" \
+      --resize_use_processor false \
+      --image_resolution high \
+      --dataset_config \"$DATA_CONFIG_PATH\" \
+      --encode_output_path \"$OUTPUT_PATH\" \
+      --data_basedir \"$DATA_BASEDIR\""
+
+    echo "  - Executing command..."
+    # echo "$cmd" # Uncomment for debugging the exact command
+    eval "$cmd"
+    echo "  - Done."
+    echo "-------------------------------------------------"
+  done
+done
+
+echo "✅ All jobs completed."

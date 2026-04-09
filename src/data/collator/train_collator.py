@@ -194,6 +194,9 @@ class MultimodalDataCollator:
         qry_inputs = self._get_batch_inputs(examples, "query_text", "query_image")
         pos_inputs = self._get_batch_inputs(examples, "pos_text", "pos_image")
         neg_inputs = self._get_batch_inputs(examples, "neg_text", "neg_image")
+        has_answer = bool(examples) and ("answer_text" in examples[0])
+        ans_inputs = self._get_batch_inputs(examples, "answer_text", "answer_image") if has_answer else None
+
         bs = len(qry_inputs['text'])
         assert bs > 0, 'An empty batch'
         # pad batch to batch_size to avoid hanging in distributed training
@@ -209,5 +212,14 @@ class MultimodalDataCollator:
         processed_qry_inputs['global_dataset_name'] = [e['global_dataset_name'] for e in examples]
         processed_pos_inputs['global_dataset_name'] = [e['global_dataset_name'] for e in examples]
 
-        print_rank(f"\t\tQry collator: processed_qry_inputs['input_ids'].shape={processed_qry_inputs['input_ids'].shape}\t\tPos collator: processed_pos_inputs['input_ids'].shape={processed_pos_inputs['input_ids'].shape}")
-        return processed_qry_inputs, processed_pos_inputs
+        processed_ans_inputs = None
+        if ans_inputs is not None:
+            processed_ans_inputs = process_fn(ans_inputs, processor=self.processor, max_length=max_len)
+            processed_ans_inputs['text'] = [e['answer_text'] for e in examples]
+            processed_ans_inputs['global_dataset_name'] = [e['global_dataset_name'] for e in examples]
+ 
+
+        print_rank(f"\t\tQry collator: processed_qry_inputs['input_ids'].shape={processed_qry_inputs['input_ids'].shape}\t\tPos collator: processed_pos_inputs['input_ids'].shape={processed_pos_inputs['input_ids'].shape}, processed_ans_inputs['input_ids'].shape={processed_ans_inputs['input_ids'].shape if processed_ans_inputs is not None else 'None'}")
+        if processed_ans_inputs is None:
+            return processed_qry_inputs, processed_pos_inputs
+        return processed_qry_inputs, processed_pos_inputs, processed_ans_inputs

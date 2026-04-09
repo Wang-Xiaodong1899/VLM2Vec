@@ -29,6 +29,7 @@ class ModelArguments:
     uimask_rand: bool = field(default=False, metadata={"help": "Enable random token selection instead of uniform selection"})
     lm_skip_layer: str = field(default='[1,28,0]', metadata={"help": "Specify the layers of the language model to skip for token selection"})
     vis_skip_layer: str = field(default='[1,32,0]', metadata={"help": "Specify the layers of the vision model to skip for token selection"})
+    emb_dec_layer: int = field(default=8, metadata={"help": "Specify the layer of the post decoder to learn new embeddings"})
 
 
 @dataclass
@@ -59,6 +60,11 @@ class TrainingArguments(TrainingArguments):
     project_name: str = field(default=None, metadata={"help": "project name"})
     logging_steps: int = field(default=1, metadata={"help": "logging steps"})
     num_train_epochs: int = field(default=1, metadata={"help": "number of training epochs"})
+
+    qp_loss_weight: float = field(default=1.0, metadata={"help": "Weight for qry-pos contrastive loss."})
+    qa_loss_weight: float = field(default=0.0, metadata={"help": "Weight for qry-answer(text) contrastive loss."})
+    pa_loss_weight: float = field(default=0.0, metadata={"help": "Weight for pos-answer(text) contrastive loss."})
+
     grad_cache: bool = field(default=False, metadata={"help": "Use gradient cache update"})
     gc_q_chunk_size: int = field(default=2, metadata={"help": "query side subset size"})
     gc_p_chunk_size: int = field(default=2, metadata={"help": "target side subset size"})

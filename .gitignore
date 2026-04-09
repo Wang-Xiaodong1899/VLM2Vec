@@ -59,3 +59,6 @@ VLM2Vec-Qwen2VL-7B/
 *_info.jsonl
 *_tgt
 gme-Qwen2-VL-2B-Instruct/
+*.mp4
+*.jpg
+*.json

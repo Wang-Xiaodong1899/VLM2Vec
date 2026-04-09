@@ -1,5 +1,5 @@
 VideoITG-40K-clip-keyframe:
-    dataset_parser: videoitg_clip_keyframe
+    dataset_parser: videoitg_clip_keyframe_answer
     dataset_name: VideoITG-40K
     dataset_path: /mnt/bn/wxd-video-understanding/wangxd/VLM2Vec/video_itg_data_single_clip_55884_save_frames_55884_qa.json
     video_frame_basedir: /mnt/bn/wxd-video-understanding/wangxd/VLM2Vec/Video_Frames_single_clip
