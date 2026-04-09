@@ -1,31 +1,31 @@
-#!/usr/bin/env bash
+# echo "==> Environment"
+# echo "conda location: $(which conda)"
+# echo "Python location: $(which python)"
+# echo "Python version: $(python --version)"
+# echo ""
 
-echo "==> Environment"
-echo "conda location: $(which conda)"
-echo "Python location: $(which python)"
-echo "Python version: $(python --version)"
-echo ""
-
-cd projects/VLM2Vec/ || exit
+# cd projects/VLM2Vec/ || exit
 
 # ==============================================================================
 # Configuration
 # ==============================================================================
-CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
+CUDA_VISIBLE_DEVICES="0"
 BATCH_SIZE=16
-MODALITIES=("image" "video" "visdoc")
-DATA_BASEDIR=data/vlm2vec_eval
-OUTPUT_BASEDIR=exps/vlm2vec
+MODALITIES=("video_ret")
+DATA_BASEDIR=/apdcephfs/gemininjceph3geminicephfsmmsearchlubanuniversal/group_6/user_seandonwang/data/vlm2vec_eval
+OUTPUT_BASEDIR=exps/vlm2vec_f8_video_ret_luban
 
 
 # ==> Define models and their base output paths here
 # Format: "MODEL_NAME;BASE_OUTPUT_PATH"
 declare -a MODEL_SPECS
-MODEL_SPECS+=( "VLM2Vec/VLM2Vec-V2.0;qwen2_vl;$OUTPUT_BASEDIR/VLM2Vec-V2.0-Qwen2VL-2B" )
-MODEL_SPECS+=( "Alibaba-NLP/gme-Qwen2-VL-2B-Instruct;gme;$OUTPUT_BASEDIR/gme-Qwen2-VL-2B-Instruct" )
-MODEL_SPECS+=( "Alibaba-NLP/gme-Qwen2-VL-7B-Instruct;gme;$OUTPUT_BASEDIR/gme-Qwen2-VL-7B-Instruct" )
-MODEL_SPECS+=( "code-kunkun/LamRA-Ret;lamra;$OUTPUT_BASEDIR/LamRA-Ret" )
-MODEL_SPECS+=( "vidore/colpali-v1.3;colpali;$OUTPUT_BASEDIR/colpali-v1.3" )
+MODEL_SPECS+=( "VLM2Vec-Qwen2VL-2B;qwen2_vl;$OUTPUT_BASEDIR/VLM2Vec-V1-Qwen2VL-2B" )
+MODEL_SPECS+=( "VLM2Vec-V2.0;qwen2_vl;$OUTPUT_BASEDIR/VLM2Vec-V2.0" )
+# MODEL_SPECS+=( "Alibaba-NLP/gme-Qwen2-VL-2B-Instruct;gme;$OUTPUT_BASEDIR/gme-Qwen2-VL-2B-Instruct" )
+# MODEL_SPECS+=( "Alibaba-NLP/gme-Qwen2-VL-7B-Instruct;gme;$OUTPUT_BASEDIR/gme-Qwen2-VL-7B-Instruct" )
+# MODEL_SPECS+=( "code-kunkun/LamRA-Ret;lamra;$OUTPUT_BASEDIR/LamRA-Ret" )
+# MODEL_SPECS+=( "vidore/colpali-v1.3;colpali;$OUTPUT_BASEDIR/colpali-v1.3" )
+
 
 
 # ==============================================================================

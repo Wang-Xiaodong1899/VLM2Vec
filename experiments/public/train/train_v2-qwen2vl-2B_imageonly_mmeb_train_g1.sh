@@ -1,0 +1,29 @@
+# NOTE: replace ... with actual paths
+# export LD_LIBRARY_PATH=...
+# export PATH=...
+# echo "conda location: $(which conda)"
+# echo "Python location: $(which python)"
+# echo "Python version: $(python --version)"
+
+# export HF_DATASETS_CACHE=...
+# export HF_HOME=...
+# export WANDB_DISABLED=false
+# export WANDB_PROJECT=...
+# export WANDB_API_KEY=...
+# export HUGGING_FACE_HUB_TOKEN=...
+# export WANDB_PROJECT=...
+# export WANDB_RUN_GROUP=...
+export HF_HUB_OFFLINE=1
+export WANDB_MODE=offline
+export EXP_NAME=Qwen2vl_2B.mmeb_image.autoresize.maxpt384.lora16.BS1.IB1.GCq1p1.NormTemp002.lr5e5.step5kwarm100.1H20
+
+export WANDB_NAME=$EXP_NAME
+export EXP_DIR=outputs/$EXP_NAME
+export WANDB_DIR=$EXP_DIR
+echo $EXP_DIR
+
+mkdir -p $EXP_DIR/wandb
+# rm -rf $EXP_DIR/wandb/*
+
+# cd PATH_TO_VLM2VEC_REPO
+CUDA_VISIBLE_DEVICES=0 torchrun train.py --lora --lora_r 16 --model_name /apdcephfs/gemininjceph3geminicephfsmmsearchlubanuniversal/group_6/user_seandonwang/models/Qwen2-VL-2B-Instruct --bf16 --pooling eos --normalize True --temperature 0.02 --dataloader_num_workers 1 --dataset_config experiments/public/train/train_image_dev.yaml --run_name $EXP_NAME --output_dir $EXP_DIR --grad_cache True --per_device_train_batch_size 1 --gc_q_chunk_size 1 --gc_p_chunk_size 1 --interleave_batch_size 1 --lr_scheduler_type linear --learning_rate 5e-5 --max_steps 5000 --warmup_steps 100 --save_steps 500 --logging_steps 1 --save_safetensors True --remove_unused_columns False --resume_from auto --report_to wandb

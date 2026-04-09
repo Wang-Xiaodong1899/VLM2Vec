@@ -62,3 +62,10 @@ gme-Qwen2-VL-2B-Instruct/
 *.mp4
 *.jpg
 *.json
+log/
+data_scripts/down.sh
+VLM2Vec-V2.0
+
+Video_Frames_single_clip/
+env1/
+exps/

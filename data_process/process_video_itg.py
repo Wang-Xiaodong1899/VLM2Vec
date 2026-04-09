@@ -2,11 +2,11 @@ import json
 import os
 from tqdm import tqdm
 
-file = "video_itg_data.json"
+file = "VideoITG-40K/video_itg_data.json"
 with open(file, "r") as f:
     data = json.load(f)
 
-root = "/mnt/bn/wxd-video-understanding/wangxd/data"
+root = "/mnt/gemininjceph3/geminicephfs/mmsearch-luban-universal/group_6/user_seandonwang/data/lmms-lab"
 save_data = []
 # single_clip_2_3_m_data = []
 for item in tqdm(data):
