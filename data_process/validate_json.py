@@ -2,7 +2,7 @@ import json
 import os
 from tqdm import tqdm
 
-file = "video_itg_data_single_clip_55884.json"
+file = "video_itg_data_single_clip_67736.json"
 with open(file, "r") as f:
     data = json.load(f)
 
@@ -27,5 +27,5 @@ for item in tqdm(data):
             continue
 
 # write save_data to json
-with open(f"video_itg_data_single_clip_55884_save_frames_{len(save_data)}_qa.json", "w") as f:
+with open(f"video_itg_data_single_clip_67736_save_frames_{len(save_data)}_qa.json", "w") as f:
     json.dump(save_data, f, ensure_ascii=False, indent=4)

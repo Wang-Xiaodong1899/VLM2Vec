@@ -1,0 +1,22 @@
+VideoITG-40K-clip-keyframe:
+    dataset_parser: videoitg_clip_keyframe_answer
+    dataset_name: VideoITG-40K
+    dataset_path: /mnt/gemininjceph7/geminicephfs/mmsearch-luban-universal/group_4/boosthuang/seandonwang/projects/VLM2Vec/video_itg_data_single_clip_67736_save_frames_67736_qa.json
+    video_frame_basedir: /mnt/gemininjceph7/geminicephfs/mmsearch-luban-universal/group_4/boosthuang/seandonwang/projects/VLM2Vec/Video_Frames_single_clip
+    weight: 1
+    num_rows: 67736
+
+    interval_s: 5
+    query_num_frames: 32
+    pos_num_frames: 8
+    pos_with_question: false
+    max_context_clip: 5
+
+WebQA:
+    dataset_parser: mmeb
+    dataset_name: TIGER-Lab/MMEB-train
+    subset_name: WebQA
+    dataset_split: original
+    image_dir: /mnt/gemininjceph7/geminicephfs/mmsearch-luban-universal/group_4/boosthuang/seandonwang/data/vlm2vec_train/MMEB-train
+    num_sample_per_subset: 20000
+    weight: 1

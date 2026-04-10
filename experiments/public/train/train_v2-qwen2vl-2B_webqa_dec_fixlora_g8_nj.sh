@@ -1,0 +1,31 @@
+#!/bin/bash
+# NOTE: replace ... with actual paths
+# export LD_LIBRARY_PATH=...
+# export PATH=...
+# echo "conda location: $(which conda)"
+# echo "Python location: $(which python)"
+# echo "Python version: $(python --version)"
+
+# export HF_DATASETS_CACHE=...
+# export HF_HOME=...
+# export WANDB_DISABLED=false
+# export WANDB_PROJECT=...
+# export WANDB_API_KEY=...
+# export HUGGING_FACE_HUB_TOKEN=...
+# export WANDB_PROJECT=...
+# export WANDB_RUN_GROUP=...
+export HF_HOME=/mnt/gemininjceph7/geminicephfs/mmsearch-luban-universal/group_4/boosthuang/seandonwang/hf_home
+export HF_HUB_OFFLINE=1
+export WANDB_MODE=offline
+export EXP_NAME=Qwen2vl_2B_dec_train_only.8H20-WebQA-Fix-LoRA-DecLayer8-nj
+
+export WANDB_NAME=$EXP_NAME
+export EXP_DIR=outputs/${EXP_NAME}
+export WANDB_DIR=$EXP_DIR
+echo $EXP_DIR
+
+mkdir -p $EXP_DIR/wandb
+# rm -rf $EXP_DIR/wandb/*
+
+# cd PATH_TO_VLM2VEC_REPO
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 torchrun --nproc_per_node=8 --master_port=2207 --max_restarts=0 train_dec.py --model_name /mnt/gemininjceph7/geminicephfs/mmsearch-luban-universal/group_4/boosthuang/seandonwang/models/Qwen2-VL-2B-Instruct/ --lora_init_path VLM2Vec-Qwen2VL-2B --lora_init_merge True --bf16 --emb_dec_layer 8 --pooling eos --normalize True --temperature 0.02 --dataloader_num_workers 4 --dataset_config experiments/public/train/train_webqa.yaml --run_name $EXP_NAME --output_dir $EXP_DIR --grad_cache True --per_device_train_batch_size 4 --gc_q_chunk_size 1 --gc_p_chunk_size 1 --interleave_batch_size 2 --lr_scheduler_type linear --learning_rate 5e-5 --max_steps 5000 --warmup_steps 10 --save_steps 1000 --logging_steps 1 --save_safetensors True --remove_unused_columns False --resume_from auto --report_to wandb

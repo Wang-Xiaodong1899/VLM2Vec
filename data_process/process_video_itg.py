@@ -6,7 +6,7 @@ file = "VideoITG-40K/video_itg_data.json"
 with open(file, "r") as f:
     data = json.load(f)
 
-root = "/mnt/gemininjceph3/geminicephfs/mmsearch-luban-universal/group_6/user_seandonwang/data/lmms-lab"
+root = "/mnt/gemininjceph7/geminicephfs/mmsearch-luban-universal/group_4/boosthuang/seandonwang/data/lmms-lab"
 save_data = []
 # single_clip_2_3_m_data = []
 for item in tqdm(data):
